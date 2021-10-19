@@ -1,0 +1,61 @@
+#!/bin/bash
+# By allex_wang
+# GistID: 3bed8534d89fa58ff47b9d98752e3fef
+# Last Modified: Fri Sep 24, 2021 10:51
+set -e
+PROG=$(basename "$0")
+error() { echo >&2 "[$PROG]: ${*}"; }
+
+[ "${CI-}" != true ] && { error "Runner context invalid"; exit 1; }
+[ "${CI_DEBUG_TRACE-}" = "true" ] && set -x
+
+# CI_X_DOCKER_IMAGE_NAME, docker image name, use project name instead."
+# add image name with registry additionally
+release_name=${CI_X_DOCKER_IMAGE_NAME:-${CI_PROJECT_NAME}}
+registry="${CI_X_DOCKER_HUB:-}"
+if [ "$registry" ]; then
+  release_name="$registry/${release_name#$registry/}"
+fi
+
+# CI_PROJECT_RELEASE_TAG, docker image tag name
+release_tag="${CI_PROJECT_RELEASE_TAG:?Release Tag Invalid}"
+
+# Build the final docker image name. eg: hub.tidu.io/test/test-ci:1.5.0
+release_image="${release_name}:${release_tag}"
+
+upload_mirror_registry ()
+{
+  local opts=${CI_X_DOCKER_MIRROR_OPTS:-}
+
+  # Evalute simple VAR-Template substitute, %{tag} -> ${release_tag}
+  opts=${opts//%\{tag\}/${release_tag}}
+
+  echo "Upload docker image to mirror registry ..."
+
+  docker pull "$release_image" >/dev/null
+  eval "(set -x; pushimage.sh -t $release_image ${opts})"
+  docker rmi -f "$release_image" >/dev/null
+}
+
+cat <<-__DOCKER_BUILD_ARGS__ >./.dockerargs
+	BUILD_GIT_HEAD=${CI_BUILD_REF}
+	BUILD_VERSION=${CI_BUILD_VERSION}
+	VERBOSE=${CI_DEBUG_TRACE:-0}
+__DOCKER_BUILD_ARGS__
+
+awk '/^(CI_COMMIT|CI_BUILD|CI_PROJECT).*=/' env > ./.dockerenv
+
+docker_file="${CI_BUILD_SPECS_DIR%/}/Dockerfile"
+docker-build.sh \
+  -t "$release_image" \
+  -f "$docker_file" . \
+  --env ./.dockerenv \
+  --build-arg-file ./.dockerargs \
+  --push \
+  ${CI_X_DOCKER_ARCHS:+--platform "${CI_X_DOCKER_ARCHS}"} \
+  ${CI_X_DOCKER_BASE_IMAGE:+--base-image ${CI_X_DOCKER_BASE_IMAGE}} \
+  ${CI_X_DOCKER_PATCH_IMAGE:+--patch-image ${CI_X_DOCKER_PATCH_IMAGE}}
+
+if [ "${CI_X_DOCKER_MIRROR:-false}" = "true" ]; then
+  upload_mirror_registry
+fi

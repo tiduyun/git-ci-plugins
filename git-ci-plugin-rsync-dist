@@ -1,0 +1,66 @@
+#!/bin/bash
+set -eu
+
+PROG=$(basename "$0")
+error() { echo >&2 "[$PROG]: ${*}"; exit 1; }
+
+[ "${CI-}" != true ] && error "Runner context invalid"
+[ "${CI_DEBUG_TRACE-}" = "true" ] && set -x
+
+dist_tar_file="./dist.tgz"
+dist_name="${CI_X_DIST_NAME:-${CI_PROJECT_NAME-}}"
+
+[ -f "$dist_tar_file" ] || error "dist file not exists"
+[ -n "$dist_name" ] || error "invalid dist name"
+
+dist_dir=${CI_X_DIST_DIR:-/data/${dist_name}/${CI_BUILD_REF_NAME?ref name invalid}}
+black_dirs="/bin:/sbin:/usr:/etc:/dev:/sys:/boot:/proc:/run:/var/lib:/var/www"
+
+check_path () {
+  p=$1
+  echo $black_dirs | tr : '\n' | while read -r line; do
+    if [ "${p#$line}" != "$p" ]; then
+      command exit 1 &>/dev/null
+    fi
+  done
+  return $?
+}
+
+rcp () {
+  src=$1
+  [ -n "$src" ] || exit 1
+  dist_host=${3:-}
+  dist_cmd=${CI_X_DIST_CMD:-}
+  if [ -z "$dist_cmd" ]; then
+    ddir=${2?invalid dist}/
+    if [ "$dist_host" ]; then
+      ddir="%h:$ddir"
+    fi
+    dist_cmd="rsync -az --delete --info=stats,progress2 --no-i-r ./ '$ddir'"
+  fi
+  dist_cmd=${dist_cmd//%h/${dist_host}}
+  eval "cd $src && $dist_cmd"
+}
+
+check_path "$dist_dir" || error "dist dir not allowed"
+
+mkdir -p ./dist \
+  && tar -C ./dist -xzf "$dist_tar_file" \
+  || exit 1
+
+if [ "${CI_X_DIST_HOST_LIST:-}" ]; then
+  echo "${CI_X_DIST_HOST_LIST}" | tr , '\n' | while read -r host; do
+    if [ "$host" ]; then
+      echo "=> $host:$dist_dir ..."
+      ssh -n "$host" "mkdir -p '$dist_dir'" \
+        && rcp ./dist "$dist_dir" "$host"
+    fi
+  done
+else
+  echo "=> local:$dist_dir ..."
+  mkdir -p "$dist_dir"
+  rcp ./dist "$dist_dir"
+fi
+
+rm -rf ./dist
+echo "Successfully send dist files."
