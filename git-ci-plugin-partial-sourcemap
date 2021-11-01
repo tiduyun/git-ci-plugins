@@ -1,0 +1,40 @@
+#!/bin/bash
+set -eE
+
+##
+# Base on dist.tgz => dist.tgz, sourcemap.tgz
+# ls ./*.tgz -1| xargs -I{} tar -C dist/ -xzvf {}
+##
+
+PROG=$(basename "$0")
+error() { echo >&2 "[$PROG]: ${*}"; }
+
+[ "${CI-}" != true ] && {
+  error "Runner context invalid"
+  exit 1
+}
+[ "${CI_DEBUG_TRACE-}" = "true" ] && set -x
+
+[ ! -f sourcemap.tgz ] || {
+  error "sourcemap exists, skipping."
+  exit 0
+}
+
+mkdir -p ./tar_files
+
+tar -xzf ./dist.tgz -C ./tar_files
+
+# backup the origin dist tarball (will be delete at the end)
+[ -f .dist.tgz ] || mv dist.tgz .dist.tgz
+
+# build sourcemap.tgz
+(
+  cd tar_files/
+  find . -name "*.map"
+) | xargs -r tar -C tar_files/ -czf sourcemap.tgz
+
+# rebuild dist.tgz
+tar --exclude "*.map" -C tar_files/ -czf dist.tgz .
+
+rm -rf tar_files
+rm -f .dist.tgz
