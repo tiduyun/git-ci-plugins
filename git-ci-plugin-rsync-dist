@@ -36,7 +36,7 @@ rcp () {
     if [ "$dist_host" ]; then
       ddir="%h:$ddir"
     fi
-    dist_cmd="rsync -az --delete --info=stats,progress2 --no-i-r ./ '$ddir'"
+    dist_cmd="rsync -az --delete --stats ./ '$ddir'"
   fi
   dist_cmd=${dist_cmd//%h/${dist_host}}
   eval "cd $src && $dist_cmd"
