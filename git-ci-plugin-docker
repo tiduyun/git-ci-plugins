@@ -1,41 +1,64 @@
 #!/bin/bash
 # By allex_wang
 # GistID: 3bed8534d89fa58ff47b9d98752e3fef
-# Last Modified: Fri Sep 24, 2021 10:51
+# Last Modified: Tue Nov 09, 2021 20:24
 set -e
+
 PROG=$(basename "$0")
 error() { echo >&2 "[$PROG]: ${*}"; }
 
 [ "${CI-}" != true ] && { error "Runner context invalid"; exit 1; }
 [ "${CI_DEBUG_TRACE-}" = "true" ] && set -x
 
-# CI_X_DOCKER_IMAGE_NAME, docker image name, use project name instead."
-# add image name with registry additionally
-release_name=${CI_X_DOCKER_IMAGE_NAME:-${CI_PROJECT_NAME}}
-registry="${CI_X_DOCKER_HUB:-}"
-if [ "$registry" ]; then
-  release_name="$registry/${release_name#$registry/}"
+if [ -z "${CI_PROJECT_RELEASE_TAG:-}" ]; then
+  error "Release Tag Invalid"
+  exit 255
 fi
 
-# CI_PROJECT_RELEASE_TAG, docker image tag name
-release_tag="${CI_PROJECT_RELEASE_TAG:?Release Tag Invalid}"
+# build tag
+BUILD_TAG=${CI_PROJECT_RELEASE_TAG:-}
 
-# Build the final docker image name. eg: hub.tidu.io/test/test-ci:1.5.0
-release_image="${release_name}:${release_tag}"
+# Build image name (with registry and tag, eg: hub.tidu.io/test/test-ci:1.5.0)
+get_image_name ()
+{
+  local fullname s registry tag
+
+  # CI_X_DOCKER_IMAGE_NAME, use project name if empty.
+  fullname=${CI_X_DOCKER_IMAGE_NAME:-${CI_PROJECT_NAME}}
+
+  s=${fullname##*/}
+  if [ "${s##*:}" = "${s}" ]; then
+    # add tag name
+    fullname="${fullname}:${BUILD_TAG}"
+  fi
+
+  tag="${fullname}"
+
+  # add registry path
+  registry="${CI_X_DOCKER_HUB:-}"
+  if [ "$registry" ]; then
+    tag="$registry/${tag#$registry/}"
+  fi
+
+  echo "$tag"
+}
 
 upload_mirror_registry ()
 {
+  local tag=$1
   local opts=${CI_X_DOCKER_MIRROR_OPTS:-}
 
-  # Evalute simple VAR-Template substitute, %{tag} -> ${release_tag}
-  opts=${opts//%\{tag\}/${release_tag}}
+  # Evalute simple VAR-Template substitute, %{tag} -> ${tag}
+  opts=${opts//%\{tag\}/${BUILD_TAG}}
 
   echo "Upload docker image to mirror registry ..."
 
-  docker pull "$release_image" >/dev/null
-  eval "(set -x; pushimage.sh -t $release_image ${opts})"
-  docker rmi -f "$release_image" >/dev/null
+  docker pull "$tag" >/dev/null
+  eval "(set -x; pushimage.sh -t $tag ${opts})"
+  docker rmi -f "$tag" >/dev/null
 }
+
+IMAGE_TAG=$(get_image_name)
 
 cat <<-__DOCKER_BUILD_ARGS__ >./.dockerargs
 	BUILD_GIT_HEAD=${CI_BUILD_REF}
@@ -47,7 +70,7 @@ awk '/^(CI_COMMIT|CI_BUILD|CI_PROJECT).*=/' env > ./.dockerenv
 
 docker_file="${CI_BUILD_SPECS_DIR%/}/Dockerfile"
 docker-build.sh \
-  -t "$release_image" \
+  -t "$IMAGE_TAG" \
   -f "$docker_file" . \
   --env ./.dockerenv \
   --build-arg-file ./.dockerargs \
@@ -57,5 +80,5 @@ docker-build.sh \
   ${CI_X_DOCKER_PATCH_IMAGE:+--patch-image ${CI_X_DOCKER_PATCH_IMAGE}}
 
 if [ "${CI_X_DOCKER_MIRROR:-false}" = "true" ]; then
-  upload_mirror_registry
+  upload_mirror_registry "$IMAGE_TAG"
 fi
